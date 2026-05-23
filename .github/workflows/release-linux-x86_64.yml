@@ -1,0 +1,175 @@
+name: Release Linux x86_64 (AppImage)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create/update (e.g. v3.1.1)"
+        required: true
+        type: string
+      draft:
+        description: "Create as a draft release"
+        required: false
+        default: false
+        type: boolean
+      prerelease:
+        description: "Mark as a prerelease"
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build and publish
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+        with:
+          submodules: recursive
+
+      - name: Setup Fortran
+        uses: fortran-lang/setup-fortran@v1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake \
+            libarchive-dev librust-bzip2-dev liblzma-dev libb2-dev \
+            libssh2-1-dev libqglviewer-dev-qt5 libopenmesh-dev libyaml-cpp-dev \
+            libopenbabel-dev libboost-iostreams-dev libboost-serialization-dev \
+            qtbase5-dev qtbase5-dev-tools qt5-qmake libgl1-mesa-dev \
+            patchelf file curl
+          sudo ln -sf /usr/include/openbabel3/openbabel /usr/include/openbabel
+          sudo ln -sf /usr/lib/x86_64-linux-gnu/libQGLViewer-qt5.so /usr/lib/x86_64-linux-gnu/libQGLViewer.so
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j4
+
+      - name: Test
+        run: |
+          cd build
+          ctest --output-on-failure
+
+      - name: Package AppImage
+        env:
+          APPDIR: AppDir
+        run: |
+          set -euo pipefail
+
+          exe_path="$(find build -maxdepth 3 -type f -name IQmol -perm -111 | head -n 1)"
+          if [ -z "${exe_path}" ]; then
+            echo "ERROR: Could not locate built IQmol executable under ./build"
+            exit 1
+          fi
+
+          # Also publish the raw executable (best-effort "static" via -static-libgcc/-static-libstdc++).
+          cp -v "${exe_path}" ./IQmol-linux-x86_64
+          chmod +x ./IQmol-linux-x86_64
+          sha256sum ./IQmol-linux-x86_64 | tee ./IQmol-linux-x86_64.sha256
+
+          rm -rf "${APPDIR}"
+          mkdir -p "${APPDIR}/usr/bin"
+          cp -v "${exe_path}" "${APPDIR}/usr/bin/IQmol"
+
+          # Bundle IQmol runtime data in the same layout used by the deb packaging script.
+          mkdir -p "${APPDIR}/usr/share/iqmol"
+          cp -a share/. "${APPDIR}/usr/share/iqmol/"
+
+          # Bundle OpenBabel plugin + data directories so IQmol can run without system OpenBabel data.
+          if [ -d /usr/lib/x86_64-linux-gnu/openbabel/3.1.1 ]; then
+            mkdir -p "${APPDIR}/usr/lib/openbabel"
+            cp -a /usr/lib/x86_64-linux-gnu/openbabel/3.1.1 "${APPDIR}/usr/lib/openbabel/"
+          elif [ -d /usr/lib/openbabel/3.1.1 ]; then
+            mkdir -p "${APPDIR}/usr/lib/openbabel"
+            cp -a /usr/lib/openbabel/3.1.1 "${APPDIR}/usr/lib/openbabel/"
+          fi
+
+          if [ -d /usr/share/openbabel ]; then
+            mkdir -p "${APPDIR}/usr/share"
+            cp -a /usr/share/openbabel "${APPDIR}/usr/share/"
+          fi
+
+          # Desktop integration required by linuxdeploy.
+          mkdir -p "${APPDIR}/usr/share/applications"
+          cat > IQmol.AppImage.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=IQmol
+Comment=Build, visualize and animate molecules
+Exec=IQmol
+Icon=iqmol
+Categories=Education;Science;Chemistry;Physics;Biology;
+Terminal=false
+EOF
+          cp -v IQmol.AppImage.desktop "${APPDIR}/usr/share/applications/iqmol.desktop"
+
+          mkdir -p "${APPDIR}/usr/share/icons/hicolor/512x512/apps"
+          cp -v resources/IQmol.png "${APPDIR}/usr/share/icons/hicolor/512x512/apps/iqmol.png"
+
+          # Build an AppImage using linuxdeploy + Qt plugin.
+          curl -L -o linuxdeploy-x86_64.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -L -o linuxdeploy-plugin-qt-x86_64.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-qt-x86_64.AppImage
+
+          export APPIMAGE_EXTRACT_AND_RUN=1
+
+          ./linuxdeploy-x86_64.AppImage \
+            --appdir "${APPDIR}" \
+            -d IQmol.AppImage.desktop \
+            -i resources/IQmol.png \
+            --plugin qt \
+            --output appimage
+
+          appimage="$(ls -1 ./*.AppImage | head -n 1)"
+          if [ -z "${appimage}" ]; then
+            echo "ERROR: AppImage was not produced"
+            exit 1
+          fi
+
+          chmod +x "${appimage}"
+          file "${appimage}" | cat
+          sha256sum "${appimage}" | tee "${appimage}.sha256"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: IQmol-linux-x86_64-appimage
+          path: |
+            *.AppImage
+            *.AppImage.sha256
+            IQmol-linux-x86_64
+            IQmol-linux-x86_64.sha256
+
+      - name: Compute release tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create or update GitHub release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ steps.tag.outputs.tag }}
+          commit: ${{ github.sha }}
+          draft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
+          allowUpdates: true
+          artifacts: "*.AppImage,*.AppImage.sha256,IQmol-linux-x86_64,IQmol-linux-x86_64.sha256"

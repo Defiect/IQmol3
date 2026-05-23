@@ -30,3 +30,10 @@ cd build
 make
 ```
 
+## GitHub Releases (Linux x86_64)
+
+The workflow `.github/workflows/release-linux-x86_64.yml` builds a Linux x86_64
+release artifact and publishes it to GitHub Releases.
+
+- Tag push: push a tag matching `v*` (e.g. `v3.1.1`)
+- Manual: run the workflow from the Actions tab and provide the `tag` input
