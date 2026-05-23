@@ -103,15 +103,15 @@ jobs:
           # Desktop integration required by linuxdeploy.
           mkdir -p "${APPDIR}/usr/share/applications"
           cat > IQmol.AppImage.desktop <<'EOF'
-[Desktop Entry]
-Type=Application
-Name=IQmol
-Comment=Build, visualize and animate molecules
-Exec=IQmol
-Icon=iqmol
-Categories=Education;Science;Chemistry;Physics;Biology;
-Terminal=false
-EOF
+          [Desktop Entry]
+          Type=Application
+          Name=IQmol
+          Comment=Build, visualize and animate molecules
+          Exec=IQmol
+          Icon=iqmol
+          Categories=Education;Science;Chemistry;Physics;Biology;
+          Terminal=false
+          EOF
           cp -v IQmol.AppImage.desktop "${APPDIR}/usr/share/applications/iqmol.desktop"
 
           mkdir -p "${APPDIR}/usr/share/icons/hicolor/512x512/apps"
